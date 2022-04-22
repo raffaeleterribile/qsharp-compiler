@@ -62,13 +62,6 @@ type LinkingTests() =
 
         references.SharedState.Locations.Count + declaration
 
-    let getCallablesWithSuffix compilation ns (suffix: string) =
-        compilation.Namespaces
-        |> Seq.filter (fun x -> x.Name = ns)
-        |> GlobalCallableResolutions
-        |> Seq.filter (fun x -> x.Key.Name.EndsWith suffix)
-        |> Seq.map (fun x -> x.Value)
-
     do
         let addOrUpdateSourceFile filePath =
             getManager (new Uri(filePath)) (File.ReadAllText filePath)
@@ -181,27 +174,30 @@ type LinkingTests() =
             |> ignore
 
         Path.Combine("TestCases", "LinkingTests", "Core.qs") |> Path.GetFullPath |> addOrUpdateSourceFile
-        let sourceCompilation = this.BuildContent(manager, chunks.[num - 1])
+        let sourceCompilation = this.BuildContent(manager, chunks.[num - 1]).BuiltCompilation
 
         let namespaces =
-            sourceCompilation.BuiltCompilation.Namespaces
+            sourceCompilation.Namespaces
             |> Seq.filter (fun ns -> ns.Name.StartsWith Signatures.InternalRenamingNS)
 
         let references = createReferences [ "InternalRenaming.dll", namespaces ]
-        let referenceCompilation = this.BuildContent(manager, "", references)
+        let referenceCompilation = this.BuildContent(manager, "", references).BuiltCompilation
 
         let countAll namespaces names =
             names |> Seq.map (countReferences namespaces) |> Seq.sum
 
-        let beforeCount =
-            countAll sourceCompilation.BuiltCompilation.Namespaces (Seq.concat [ renamed; notRenamed ])
+        let beforeCount = countAll sourceCompilation.Namespaces (Seq.concat [ renamed; notRenamed ])
 
-        let afterCountOriginal = countAll referenceCompilation.BuiltCompilation.Namespaces renamed
-        let decorator = new NameDecorator("QsRef")
-        let newNames = renamed |> Seq.map (fun name -> decorator.Decorate(name, 0))
+        let afterCountOriginal = countAll referenceCompilation.Namespaces renamed
 
-        let afterCount =
-            countAll referenceCompilation.BuiltCompilation.Namespaces (Seq.concat [ newNames; notRenamed ])
+        let newNames =
+            renamed
+            |> Seq.map (fun name ->
+                TestUtils.getCallablesWithSuffix referenceCompilation name.Namespace ("__" + name.Name)
+                |> Seq.exactlyOne
+                |> (fun callable -> callable.FullName))
+
+        let afterCount = countAll referenceCompilation.Namespaces (Seq.concat [ newNames; notRenamed ])
 
         Assert.NotEqual(0, beforeCount)
         Assert.Equal(0, afterCountOriginal)
@@ -212,34 +208,26 @@ type LinkingTests() =
         let compilation = this.CompileMonomorphization source
 
         let generated =
-            getCallablesWithSuffix compilation Signatures.MonomorphizationNS "_IsInternalUsesInternal"
-            |> (fun x ->
-                Assert.True(1 = Seq.length x)
-                Seq.item 0 x)
+            TestUtils.getCallablesWithSuffix compilation Signatures.MonomorphizationNS "_IsInternalUsesInternal"
+            |> Seq.exactlyOne
 
         Assert.True(generated.Access = Internal, "Callables originally internal should remain internal.")
 
         let generated =
-            getCallablesWithSuffix compilation Signatures.MonomorphizationNS "_IsInternalUsesPublic"
-            |> (fun x ->
-                Assert.True(1 = Seq.length x)
-                Seq.item 0 x)
+            TestUtils.getCallablesWithSuffix compilation Signatures.MonomorphizationNS "_IsInternalUsesPublic"
+            |> Seq.exactlyOne
 
         Assert.True(generated.Access = Internal, "Callables originally internal should remain internal.")
 
         let generated =
-            getCallablesWithSuffix compilation Signatures.MonomorphizationNS "_IsPublicUsesInternal"
-            |> (fun x ->
-                Assert.True(1 = Seq.length x)
-                Seq.item 0 x)
+            TestUtils.getCallablesWithSuffix compilation Signatures.MonomorphizationNS "_IsPublicUsesInternal"
+            |> Seq.exactlyOne
 
         Assert.True(generated.Access = Internal, "Callables with internal arguments should be internal.")
 
         let generated =
-            getCallablesWithSuffix compilation Signatures.MonomorphizationNS "_IsPublicUsesPublic"
-            |> (fun x ->
-                Assert.True(1 = Seq.length x)
-                Seq.item 0 x)
+            TestUtils.getCallablesWithSuffix compilation Signatures.MonomorphizationNS "_IsPublicUsesPublic"
+            |> Seq.exactlyOne
 
         Assert.True(
             generated.Access = Public,
@@ -341,10 +329,8 @@ type LinkingTests() =
 
         let isConcretizationOf (expected: QsQualifiedName) (given: QsQualifiedName) =
             given.Namespace = expected.Namespace
-            && given.Name.Length > 34
-            && given.Name.[0] = '_'
-            && given.Name.[33] = '_'
-            && given.Name.[34..] = expected.Name
+            && NameGenerator.IsGeneratedName(given)
+            && NameGenerator.OriginalCallableFromGenerated(given).Name = expected.Name
 
         let mutable gotLength, gotIndexRange = false, false
 
@@ -631,15 +617,15 @@ type LinkingTests() =
                                "InternalRenaming2.dll", namespaces ]
 
         let referenceCompilation = this.BuildContent(manager, "", references)
-        let callables = GlobalCallableResolutions referenceCompilation.BuiltCompilation.Namespaces
 
-        let decorator = new NameDecorator("QsRef")
+        let generated =
+            TestUtils.getCallablesWithSuffix referenceCompilation.BuiltCompilation Signatures.InternalRenamingNS "__Foo"
 
-        for idx = 0 to references.Declarations.Count - 1 do
-            let name = decorator.Decorate(qualifiedName Signatures.InternalRenamingNS "Foo", idx)
-            let specializations = callables.[name].Specializations
-            Assert.Equal(4, specializations.Length)
-            Assert.True(specializations |> Seq.forall (fun s -> s.Source = callables.[name].Source))
+        Assert.True(2 = Seq.length generated)
+
+        for callable in generated do
+            Assert.Equal(4, callable.Specializations.Length)
+            Assert.True(callable.Specializations |> Seq.forall (fun s -> s.Source = callable.Source))
 
 
     [<Fact>]
@@ -683,7 +669,6 @@ type LinkingTests() =
         let checkValidCombination (sources: ImmutableDictionary<_, _>) =
             let mutable combined = ImmutableArray<QsNamespace>.Empty
             let trees = sources |> Seq.map (fun kv -> this.BuildReference(kv.Key, fst kv.Value)) |> Seq.toArray
-            let sourceIndex = (trees |> Seq.mapi (fun i (struct (x, _)) -> (x, i))).ToImmutableDictionary(fst, snd)
 
             let onError _ _ =
                 Assert.False(true, "diagnostics generated upon combining syntax trees")
@@ -691,14 +676,10 @@ type LinkingTests() =
             let success = References.CombineSyntaxTrees(&combined, 0, new Action<_, _>(onError), trees)
             Assert.True(success, "failed to combine syntax trees")
 
-            let decorator = new NameDecorator("QsRef")
+            let undecorate (assertUndecorated: bool) (fullName: QsQualifiedName) =
 
-            let undecorate (assertUndecorated: bool) (fullName: QsQualifiedName, srcIdx) =
-                let name = decorator.Undecorate fullName.Name
-
-                if name <> null then
-                    Assert.Equal<string>(decorator.Decorate(name, srcIdx), fullName.Name)
-                    { Namespace = fullName.Namespace; Name = name }
+                if NameGenerator.IsGeneratedName fullName then
+                    NameGenerator.OriginalCallableFromGenerated fullName
                 else
                     Assert.False(assertUndecorated, sprintf "name %s is not decorated" (fullName.ToString()))
                     fullName
@@ -708,11 +689,9 @@ type LinkingTests() =
             let AssertSource (fullName: QsQualifiedName, source, modifier: _ option) =
                 match sources.TryGetValue source with
                 | true, (_, decls: _ Set) ->
-                    let idx = sourceIndex.[source]
-
                     let name =
-                        if modifier.IsNone then undecorate false (fullName, idx)
-                        elif modifier.Value = Internal then undecorate true (fullName, idx)
+                        if modifier.IsNone then undecorate false fullName
+                        elif modifier.Value = Internal then undecorate true fullName
                         else fullName
 
                     Assert.True(decls.Contains name)
