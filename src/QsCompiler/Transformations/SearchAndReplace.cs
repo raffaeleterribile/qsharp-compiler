@@ -454,6 +454,37 @@ namespace Microsoft.Quantum.QsCompiler.Transformations.SearchAndReplace
 
     // routines for replacing symbols/identifiers
 
+    public static class NameGenerator
+    {
+        private static Regex LabelPattern(string label) =>
+            new Regex($"^__{Regex.Escape(label)}_?[0-9]+__", RegexOptions.IgnoreCase);
+
+        internal static string GenerateVariableName(string label, int number, string original) =>
+            GenerateVariableName(label, number) + original;
+
+        internal static string GenerateVariableName(string label, int number) =>
+            $"__{label}{(number < -0 ? "_" : "")}{Math.Abs(number)}__";
+
+        internal static string OriginalVariableFromGenerated(string label, string generated) =>
+            LabelPattern(label).Replace(generated, string.Empty);
+
+        private static readonly Regex GUID =
+            new Regex(@"^__[a-f0-9]{32}__", RegexOptions.IgnoreCase);
+
+        internal static QsQualifiedName GenerateCallableName(QsQualifiedName original) =>
+            new QsQualifiedName(
+                original.Namespace,
+                "__" + Guid.NewGuid().ToString("N") + "__" + original.Name);
+
+        public static bool IsGeneratedName(QsQualifiedName callableName) =>
+            GUID.IsMatch(callableName.Name);
+
+        public static QsQualifiedName OriginalCallableFromGenerated(QsQualifiedName generated) =>
+            new QsQualifiedName(
+                generated.Namespace,
+                GUID.Replace(generated.Name, string.Empty));
+    }
+
     /// <summary>
     /// Provides simple name decoration (or name mangling) by prefixing names with a label and number.
     /// </summary>
@@ -551,7 +582,7 @@ namespace Microsoft.Quantum.QsCompiler.Transformations.SearchAndReplace
             /// </summary>
             internal string GenerateUniqueName(string varName)
             {
-                var unique = Decorator.Decorate(varName, this.variableNr++);
+                var unique = NameGenerator.GenerateVariableName(NameGeneratorLabel, this.variableNr++, varName);
                 this.uniqueNames[varName] = unique;
                 return unique;
             }
@@ -566,9 +597,9 @@ namespace Microsoft.Quantum.QsCompiler.Transformations.SearchAndReplace
 
         /* static methods for convenience */
 
-        private static readonly NameDecorator Decorator = new NameDecorator("qsVar");
+        private static readonly string NameGeneratorLabel = "qsVar";
 
-        public static string StripUniqueName(string uniqueName) => Decorator.Undecorate(uniqueName) ?? uniqueName;
+        public static string StripUniqueName(string uniqueName) => NameGenerator.OriginalVariableFromGenerated(NameGeneratorLabel, uniqueName);
 
         /* overrides */
 
