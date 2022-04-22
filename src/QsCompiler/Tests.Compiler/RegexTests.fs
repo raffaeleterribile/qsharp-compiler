@@ -8,6 +8,7 @@ open Microsoft.Quantum.QsCompiler.CommandLineCompiler
 open Microsoft.Quantum.QsCompiler.DataTypes
 open Microsoft.Quantum.QsCompiler.Testing.TestUtils
 open Microsoft.Quantum.QsCompiler.Transformations.SearchAndReplace
+open Microsoft.Quantum.QsCompiler.SyntaxTree
 
 
 [<Fact>]
@@ -23,6 +24,35 @@ let ``Valid array bracket matching`` () =
         "[a [], b [sf; [a ; b c;]; 4]]"
     ]
     |> List.iter (fun str -> FormatCompilation.WithinArrayBrackets.Match str |> verifyMatch str)
+
+[<Fact>]
+let ``AAAA`` () =
+    let original = { Namespace = "Test"; Name = "a__8cdadee32e1d46879bbeb4779cae5c2f__Foo" }
+    let gen1 = NameGenerator.GenerateCallableName(original)
+    let gen2 = NameGenerator.GenerateCallableName(gen1)
+
+    let is = NameGenerator.IsGeneratedName(original)
+    let is1 = NameGenerator.IsGeneratedName(gen1)
+    let is2 = NameGenerator.IsGeneratedName(gen2)
+
+    let back = NameGenerator.OriginalCallableFromGenerated(original)
+    let back1 = NameGenerator.OriginalCallableFromGenerated(gen1)
+    let back2 = NameGenerator.OriginalCallableFromGenerated(gen2)
+
+    ()
+
+[<Fact>]
+let ``BBBB`` () =
+    let original = "myLabel_12__foo"
+    let label = "myLabel"
+    let gen1 = NameGenerator.GenerateVariableName(label, -11, original)
+    let gen2 = NameGenerator.GenerateVariableName(label, -11, gen1)
+
+    let back = NameGenerator.OriginalVariableFromGenerated(label, original)
+    let back1 = NameGenerator.OriginalVariableFromGenerated(label, gen1)
+    let back2 = NameGenerator.OriginalVariableFromGenerated(label, gen2)
+
+    ()
 
 [<Fact>]
 let ``Invalid array bracket matching`` () =
